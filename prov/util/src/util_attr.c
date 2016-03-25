@@ -30,8 +30,9 @@
  * SOFTWARE.
  */
 
-#include <fi_util.h>
+#include <stdio.h>
 
+#include <fi_util.h>
 
 static int fi_valid_addr_format(uint32_t prov_format, uint32_t user_format)
 {
@@ -56,11 +57,167 @@ static int fi_valid_addr_format(uint32_t prov_format, uint32_t user_format)
 	}
 }
 
+/*
+ * Accepts a string which has tokens delimited by underscores and returns a token
+ * array, tok[0..max_token - 1]. Callers are responsible for freeing tok[0] which
+ * will point to a fudged copy of the string. Refer strtok_r manpage for details.
+ */
+int utilx_parse_name(const char *name, int max_tok, char **tok, int get_prefix)
+{
+	char *name_dup, *name_ref, *save_ptr;
+	char *delim = "_";
+	int i, parsed_len = 0;
+
+	name_dup = strdup(name);
+	if (!name_dup)
+		return -FI_ENOMEM;
+
+	name_ref = name_dup;
+	for (i = 0; i < max_tok; name_ref = NULL, i++) {
+		tok[i] = strtok_r(name_ref, delim, &save_ptr);
+		if (!tok[i])
+			break;
+	}
+	if (i < max_tok)
+		goto err;
+
+	if (!get_prefix) {
+		/* Handle the case where there is a delim in token itself */
+		for (i = 0; i < max_tok; i++)
+			parsed_len += strlen(tok[i]) + 1;
+		parsed_len--;
+
+		if (strlen(name) > parsed_len)
+			tok[max_tok - 1][strlen(tok[max_tok - 1])] = *delim;
+	}
+
+	return 0;
+err:
+	free(name_dup);
+	return -FI_EOTHER;
+}
+
+int utilx_tr_layer_domain_attr(struct fi_domain_attr *layer_attr,
+		struct fi_domain_attr *base_attr)
+{
+	char *tok[2];
+	int ret;
+
+	ret = utilx_parse_name(layer_attr->name, 2, tok, 0);
+	if (ret)
+		return ret;
+	if (!(base_attr->name = strdup(tok[1])))
+		ret = -FI_ENOMEM;
+	free(tok[0]);
+	return ret;
+}
+
+int utilx_tr_layer_fabric_attr(struct fi_fabric_attr *layer_attr,
+		struct fi_fabric_attr *base_attr)
+{
+	char *tok[3];
+	int ret;
+
+	ret = utilx_parse_name(layer_attr->name, 3, tok, 0);
+	if (ret)
+		return ret;
+	if (!(base_attr->name = strdup(tok[2]))) {
+		ret = -FI_ENOMEM;
+		goto out;
+	}
+	if (!(base_attr->prov_name = strdup(tok[1])))
+		ret = -FI_ENOMEM;
+out:
+	free(tok[0]);
+	return ret;
+}
+
+int utilx_tr_base_domain_attr(struct fi_domain_attr *base_attr, char *prefix,
+		struct fi_domain_attr *layer_attr)
+{
+	size_t len;
+	len = strlen(prefix) + strlen(base_attr->name) + 2;
+	if (!(layer_attr->name = malloc(len)))
+		return -FI_ENOMEM;
+	snprintf(layer_attr->name, len, "%s_%s", prefix, base_attr->name);
+	return 0;
+}
+
+/* Construct fabric name for the layered provider in the following format:
+ * <layered_prov>_<base_prov_name>_<base_prov_fabric_name>
+ * e.g. rxm_verbs_IB-1234 */
+int utilx_tr_base_fabric_attr(struct fi_fabric_attr *base_attr, char *prefix,
+		struct fi_fabric_attr *layer_attr)
+{
+	size_t len;
+	len = strlen(prefix) + strlen(base_attr->name) +
+		strlen(base_attr->prov_name) + 3;
+	if (!(layer_attr->name = malloc(len)))
+		return -FI_ENOMEM;
+	snprintf(layer_attr->name, len, "%s_%s_%s", prefix, base_attr->prov_name,
+			base_attr->name);
+	return 0;
+}
+
+int utilx_getinfo(uint32_t version, const char *node, const char *service,
+			uint64_t flags, const struct fi_provider *prov,
+			const struct fi_info *prov_info, struct fi_info *hints,
+			utilx_tr_layer_info_t tr_layer_info,
+			utilx_tr_base_info_t tr_base_info,
+			int get_base_info, struct fi_info **info)
+{
+	struct fi_info *base_hints, *base_info;
+	int ret;
+
+	ret = fi_check_info(prov, prov_info, hints, FI_CHECK_LAYERED);
+	if (ret)
+		return ret;
+
+	if (!(base_hints = tr_layer_info(hints)))
+		return -FI_ENOMEM;
+
+	ret = fi_getinfo(version, node, service, flags, base_hints, &base_info);
+	if (ret)
+		goto out;
+
+	if (get_base_info) {
+		*info = base_info;
+	} else {
+		if (!(*info = tr_base_info(base_info))) {
+			ret = -FI_ENOMEM;
+			goto out;
+		}
+		fi_freeinfo(base_info);
+	}
+out:
+	fi_freeinfo(base_hints);
+	return ret;
+}
+
+int fi_check_name(char *user_name, char *prov_name, enum fi_check_type type)
+{
+	char *tok[1];
+	int ret;
+
+	if (type == FI_CHECK_LAYERED) {
+		ret = utilx_parse_name(user_name, 1, tok, 1);
+		if (ret)
+			return ret;
+
+		ret = strcasecmp(prov_name, tok[0]);
+		free(tok[0]);
+		return ret;
+	} else {
+		return strcasecmp(prov_name, user_name);
+	}
+}
+
 int fi_check_fabric_attr(const struct fi_provider *prov,
 			 const struct fi_fabric_attr *prov_attr,
-			 const struct fi_fabric_attr *user_attr)
+			 const struct fi_fabric_attr *user_attr,
+			 enum fi_check_type type)
 {
-	if (user_attr->name && strcasecmp(user_attr->name, prov_attr->name)) {
+	if (user_attr->name && fi_check_name(user_attr->name, prov_attr->name, type)) {
 		FI_INFO(prov, FI_LOG_CORE, "Unknown fabric name\n");
 		return -FI_ENODATA;
 	}
@@ -132,9 +289,10 @@ static int fi_resource_mgmt_level(enum fi_resource_mgmt rm_model)
 
 int fi_check_domain_attr(const struct fi_provider *prov,
 			 const struct fi_domain_attr *prov_attr,
-			 const struct fi_domain_attr *user_attr)
+			 const struct fi_domain_attr *user_attr,
+			 enum fi_check_type type)
 {
-	if (user_attr->name && strcasecmp(user_attr->name, prov_attr->name)) {
+	if (user_attr->name && fi_check_name(user_attr->name, prov_attr->name, type)) {
 		FI_INFO(prov, FI_LOG_CORE, "Unknown domain name\n");
 		return -FI_ENODATA;
 	}
@@ -217,26 +375,36 @@ int fi_check_rx_attr(const struct fi_provider *prov,
 {
 	if (user_attr->caps & ~(prov_attr->caps)) {
 		FI_INFO(prov, FI_LOG_CORE, "caps not supported\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_attr->caps, FI_TYPE_CAPS));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_attr->caps, FI_TYPE_CAPS));
 		return -FI_ENODATA;
 	}
 
 	if ((user_attr->mode & prov_attr->mode) != prov_attr->mode) {
 		FI_INFO(prov, FI_LOG_CORE, "needed mode not set\n");
+		FI_INFO(prov, FI_LOG_CORE, "Expected: %s\n", fi_tostr(&prov_attr->mode, FI_TYPE_MODE));
+		FI_INFO(prov, FI_LOG_CORE, "Given: %s\n", fi_tostr(&user_attr->mode, FI_TYPE_MODE));
 		return -FI_ENODATA;
 	}
 
 	if (prov_attr->op_flags & ~(prov_attr->op_flags)) {
 		FI_INFO(prov, FI_LOG_CORE, "op_flags not supported\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_attr->op_flags, FI_TYPE_OP_FLAGS));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_attr->op_flags, FI_TYPE_OP_FLAGS));
 		return -FI_ENODATA;
 	}
 
 	if (user_attr->msg_order & ~(prov_attr->msg_order)) {
 		FI_INFO(prov, FI_LOG_CORE, "msg_order not supported\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_attr->msg_order, FI_TYPE_MSG_ORDER));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_attr->msg_order, FI_TYPE_MSG_ORDER));
 		return -FI_ENODATA;
 	}
 
 	if (user_attr->comp_order & ~(prov_attr->comp_order)) {
 		FI_INFO(prov, FI_LOG_CORE, "comp_order not supported\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_attr->comp_order, FI_TYPE_MSG_ORDER));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_attr->comp_order, FI_TYPE_MSG_ORDER));
 		return -FI_ENODATA;
 	}
 
@@ -264,26 +432,36 @@ int fi_check_tx_attr(const struct fi_provider *prov,
 {
 	if (user_attr->caps & ~(prov_attr->caps)) {
 		FI_INFO(prov, FI_LOG_CORE, "caps not supported\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_attr->caps, FI_TYPE_CAPS));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_attr->caps, FI_TYPE_CAPS));
 		return -FI_ENODATA;
 	}
 
 	if ((user_attr->mode & prov_attr->mode) != prov_attr->mode) {
 		FI_INFO(prov, FI_LOG_CORE, "needed mode not set\n");
+		FI_INFO(prov, FI_LOG_CORE, "Expected: %s\n", fi_tostr(&prov_attr->mode, FI_TYPE_MODE));
+		FI_INFO(prov, FI_LOG_CORE, "Given: %s\n", fi_tostr(&user_attr->mode, FI_TYPE_MODE));
 		return -FI_ENODATA;
 	}
 
 	if (prov_attr->op_flags & ~(prov_attr->op_flags)) {
 		FI_INFO(prov, FI_LOG_CORE, "op_flags not supported\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_attr->op_flags, FI_TYPE_OP_FLAGS));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_attr->op_flags, FI_TYPE_OP_FLAGS));
 		return -FI_ENODATA;
 	}
 
 	if (user_attr->msg_order & ~(prov_attr->msg_order)) {
 		FI_INFO(prov, FI_LOG_CORE, "msg_order not supported\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_attr->msg_order, FI_TYPE_MSG_ORDER));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_attr->msg_order, FI_TYPE_MSG_ORDER));
 		return -FI_ENODATA;
 	}
 
 	if (user_attr->comp_order & ~(prov_attr->comp_order)) {
 		FI_INFO(prov, FI_LOG_CORE, "comp_order not supported\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_attr->comp_order, FI_TYPE_MSG_ORDER));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_attr->comp_order, FI_TYPE_MSG_ORDER));
 		return -FI_ENODATA;
 	}
 
@@ -312,7 +490,8 @@ int fi_check_tx_attr(const struct fi_provider *prov,
 
 int fi_check_info(const struct fi_provider *prov,
 		  const struct fi_info *prov_info,
-		  const struct fi_info *user_info)
+		  const struct fi_info *user_info,
+		  enum fi_check_type type)
 {
 	int ret;
 
@@ -321,11 +500,15 @@ int fi_check_info(const struct fi_provider *prov,
 
 	if (user_info->caps & ~(prov_info->caps)) {
 		FI_INFO(prov, FI_LOG_CORE, "Unsupported capabilities\n");
+		FI_INFO(prov, FI_LOG_CORE, "Supported: %s\n", fi_tostr(&prov_info->caps, FI_TYPE_CAPS));
+		FI_INFO(prov, FI_LOG_CORE, "Requested: %s\n", fi_tostr(&user_info->caps, FI_TYPE_CAPS));
 		return -FI_ENODATA;
 	}
 
 	if ((user_info->mode & prov_info->mode) != prov_info->mode) {
 		FI_INFO(prov, FI_LOG_CORE, "needed mode not set\n");
+		FI_INFO(prov, FI_LOG_CORE, "Expected: %s\n", fi_tostr(&prov_info->mode, FI_TYPE_MODE));
+		FI_INFO(prov, FI_LOG_CORE, "Given: %s\n", fi_tostr(&user_info->mode, FI_TYPE_MODE));
 		return -FI_ENODATA;
 	}
 
@@ -337,14 +520,16 @@ int fi_check_info(const struct fi_provider *prov,
 
 	if (user_info->fabric_attr) {
 		ret = fi_check_fabric_attr(prov, prov_info->fabric_attr,
-					   user_info->fabric_attr);
+					   user_info->fabric_attr,
+					   type);
 		if (ret)
 			return ret;
 	}
 
 	if (user_info->domain_attr) {
 		ret = fi_check_domain_attr(prov, prov_info->domain_attr,
-					   user_info->domain_attr);
+					   user_info->domain_attr,
+					   type);
 		if (ret)
 			return ret;
 	}
