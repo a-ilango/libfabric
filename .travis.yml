@@ -1,12 +1,10 @@
 dist: trusty
-sudo: false
+sudo: required
 language: c
 compiler:
-    - clang
     - gcc
 os:
     - linux
-    - osx
 addons:
     apt:
         packages:
@@ -21,6 +19,15 @@ addons:
         - www.openfabrics.org
         - git.kernel.org
 
+    coverity_scan:
+        project:
+            name: "a-ilango/libfabric"
+            description: "libfabric"
+        notification_email: arun.ilango@intel.com
+        build_command_prepend: "./autogen.sh; ./configure"
+        build_command:   "make -j 2"
+        branch_pattern: coverity_scan
+
 env:
     global:
         - PREFIX=$HOME/install
@@ -29,12 +36,11 @@ env:
         - LDFLAGS=-L$PREFIX/lib
         - LD_LIBRARY_PATH=$PREFIX/lib
         - LIBFABRIC_CONFIGURE_ARGS="--prefix=$PREFIX --enable-sockets"
+        - secure: "BNJRfoayxzzkz/r2ZSqZb1Y1m9LcGQAuct/R7SwFAtjnSt4wfzfSR69VBNx8NdDxDesgiQ80IOrcG37P+b43Wur6NA0sGRIMHCHw1bTXbnboxgyPsGVOXRv1VDSRsKFCDzQMUR2dLi7kF/nmZR/McWLzm9OihF8ILEZXysTqhCVeb7Z2q2oXliR8c4DofZTgFY7RIoROlnBggBC8CGl7h3FR5rg+X8TfMPusb3T2HViVmzBkwMalN+1m0CXdB2e4D+LtioGV+zzfj0S8j3RRBUz6ntKkfUxCOAeTaYbtyrDGukQRXcUhLzxTZrMS8+dXsxopPJKP8uJlW8EOnGVG1Sz7s6R3LwNCsJqhnQQ53EBcpzTJuHV7J25v1a0ccFujOaIUgM9G1jlimbmrY+B2TbC/GlPVazdOcnT0l6DunS1Z55/E2n0do9zpmF72lTOM7cIjNWUGQ8BzFDNU6Bulgv8Y2HM8z8zeackZqlKH/pybB4pPr7YVtW0jSmXZj/p9avFwytJRzONyvnLXKSLqKFRHihR0NXw5IGXsoBt47e6l4qhnqnSslyrYkU20I+5V/19W+H02fHbTUkX1JEi1pJ2dPSto9wlPsytUOw1wZfjX4Uv6V3OBuEzk3hIvPiiuPqxedKkZsg1qkXeN4TVZr3bxy+nXXeROji7QFhUURMY="
 
 # Brew update GNU Autotools so that autogen can succeed
 before_install:
-    - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then brew update;
-        brew upgrade automake || true; brew upgrade libtool || true;
-      fi
+    - echo -n | openssl s_client -connect scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
 
 install:
     - ./autogen.sh
@@ -42,10 +48,6 @@ install:
     - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then
         LIBRARY_CONFIGURE_ARGS="$LIBFABRIC_CONFIGURE_ARGS --enable-usnic
         --enable-verbs";
-      fi
-    - if [[ "$TRAVIS_OS_NAME" == "linux" && "`basename $CC`" == "clang" ]]; then
-        ./configure CFLAGS="-Werror $CFLAGS" $LIBFABRIC_CONFIGURE_ARGS
-        --enable-debug && make -j2;
       fi
     # Test fabric direct
     - ./configure --prefix=$PREFIX --enable-direct=sockets --enable-udp=no
