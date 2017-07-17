@@ -613,6 +613,31 @@ struct fi_ops_ep sock_ctx_ep_ops = {
 	.tx_size_left = sock_tx_size_left,
 };
 
+static void sock_ep_clear_eq_list(struct dlistfd_head *list,
+				  struct fid_ep *ep_fid)
+{
+	struct sock_eq_entry *eq_entry;
+	struct dlist_entry *entry;
+	fid_t fid;
+
+	if (!dlistfd_empty(list)) {
+		dlist_foreach(&list->list, entry) {
+			eq_entry = container_of(entry, struct sock_eq_entry,
+						entry);
+			/* fi_eq_entry, fi_eq_cm_entry and fi_eq_err_entry all
+			 * have fid_t as first member */
+			fid = ((struct fi_eq_entry *)eq_entry->event)->fid;
+
+			if (fid != (fid_t)ep_fid)
+				continue;
+
+			dlistfd_remove(&eq_entry->entry, list);
+			dlistfd_reset(list);
+			free(eq_entry);
+		}
+	}
+}
+
 static int sock_ep_close(struct fid *fid)
 {
 	struct sock_ep *sock_ep;
@@ -689,6 +714,17 @@ static int sock_ep_close(struct fid *fid)
 	}
 
 	fastlock_destroy(&sock_ep->attr->cm.lock);
+
+	if (sock_ep->attr->eq) {
+		fastlock_acquire(&sock_ep->attr->eq->lock);
+		sock_ep_clear_eq_list(&sock_ep->attr->eq->list,
+				      &sock_ep->ep);
+		/* Any err_data if present would be freed by
+		 * sock_eq_clean_err_data_list when EQ is closed */
+		sock_ep_clear_eq_list(&sock_ep->attr->eq->err_list,
+				      &sock_ep->ep);
+		fastlock_release(&sock_ep->attr->eq->lock);
+	}
 
 	if (sock_ep->attr->fclass != FI_CLASS_SEP) {
 		if (!sock_ep->attr->tx_shared)
