@@ -116,6 +116,8 @@ static int udpx_getinfo(uint32_t version, const char *node, const char *service,
 			uint64_t flags, const struct fi_info *hints,
 			struct fi_info **info)
 {
+	uint16_t port_save = 0;
+	struct fi_info *fi;
 	int ret;
 
 	ret = util_getinfo(&udpx_util_prov, version, node, service, flags,
@@ -123,8 +125,17 @@ static int udpx_getinfo(uint32_t version, const char *node, const char *service,
 	if (ret)
 		return ret;
 
-	if (!(*info)->src_addr && !(*info)->dest_addr)
+	if (ofi_is_only_src_port_set(NULL, NULL, 0, *info))
+		port_save = ofi_addr_get_port((*info)->src_addr);
+
+	if ((!(*info)->src_addr || ofi_is_only_src_port_set(NULL, NULL, 0, *info))
+	     && !(*info)->dest_addr)
 		udpx_getinfo_ifs(info);
+
+	if (port_save) {
+		for (fi = *info; fi; fi = fi->next)
+			ofi_addr_set_port(fi->src_addr, port_save);
+	}
 
 	return 0;
 }
