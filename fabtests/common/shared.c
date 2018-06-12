@@ -2316,7 +2316,7 @@ int ft_sync()
 	int ret;
 
 	if (opts.dst_addr) {
-		if (!opts.oob_port) {
+		if (1 || !opts.oob_port) {
 			ret = ft_tx(ep, remote_fi_addr, 1, &tx_ctx);
 			if (ret)
 				return ret;
@@ -2332,7 +2332,7 @@ int ft_sync()
 				return ret;
 		}
 	} else {
-		if (!opts.oob_port) {
+		if (1 || !opts.oob_port) {
 			ret = ft_rx(ep, 1);
 			if (ret)
 				return ret;
