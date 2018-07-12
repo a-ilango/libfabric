@@ -388,3 +388,5 @@ Even though windows isn't fully supported yet it is possible to compile and link
   - choose C/C++ > General and add `<libfabricroot>\include` to "Additional include Directories"
   - choose Linker > Input and add `<libfabricroot>\x64\<yourconfigchoice>\libfabric.lib` to "Additional Dependencies"
   - depending on what you are building you may also need to copy `libfabric.dll` into the targetfolder of your own project.
+
+Test status
