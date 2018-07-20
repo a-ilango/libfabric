@@ -859,20 +859,6 @@ static void rxm_cq_read_write_error(struct rxm_ep *rxm_ep)
 	}
 }
 
-static inline int rxm_ep_repost_buf(struct rxm_rx_buf *rx_buf)
-{
-	if (rx_buf->ep->srx_ctx)
-		rx_buf->conn = NULL;
-	rx_buf->hdr.state = RXM_RX;
-
-	if (fi_recv(rx_buf->hdr.msg_ep, &rx_buf->pkt, rx_buf->ep->eager_pkt_size,
-		    rx_buf->hdr.desc, FI_ADDR_UNSPEC, rx_buf)) {
-		FI_WARN(&rxm_prov, FI_LOG_EP_CTRL, "Unable to repost buf\n");
-		return -FI_EAVAIL;
-	}
-	return FI_SUCCESS;
-}
-
 int rxm_ep_prepost_buf(struct rxm_ep *rxm_ep, struct fid_ep *msg_ep)
 {
 	struct rxm_rx_buf *rx_buf;
@@ -899,18 +885,6 @@ int rxm_ep_prepost_buf(struct rxm_ep *rxm_ep, struct fid_ep *msg_ep)
 		}
 	}
 	return 0;
-}
-
-static inline void rxm_cq_repost_rx_buffers(struct rxm_ep *rxm_ep)
-{
-	struct rxm_rx_buf *buf;
-	rxm_ep->res_fastlock_acquire(&rxm_ep->util_ep.lock);
-	while (!dlist_empty(&rxm_ep->repost_ready_list)) {
-		dlist_pop_front(&rxm_ep->repost_ready_list, struct rxm_rx_buf,
-				buf, repost_entry);
-		(void) rxm_ep_repost_buf(buf);
-	}
-	rxm_ep->res_fastlock_release(&rxm_ep->util_ep.lock);
 }
 
 static int rxm_cq_reprocess_directed_recvs(struct rxm_recv_queue *recv_queue)
@@ -1013,13 +987,12 @@ static inline ssize_t rxm_ep_read_msg_cq(struct rxm_ep *rxm_ep)
 		} else {
 			return 1;
 		}
-	} else if (ret < 0) {
-		if (ret != -FI_EAGAIN) {
-			if (ret == -FI_EAVAIL)
-				rxm_cq_read_write_error(rxm_ep);
-			else
-				rxm_cq_write_error_all(rxm_ep, ret);
-		}
+	} else if (ret == -FI_EAGAIN) {
+		rxm_cq_repost_rx_buffers(rxm_ep);
+	} else if (ret == -FI_EAVAIL) {
+		rxm_cq_read_write_error(rxm_ep);
+	} else {
+		rxm_cq_write_error_all(rxm_ep, ret);
 	}
 	return ret;
 }
@@ -1029,8 +1002,6 @@ void rxm_ep_progress_one(struct util_ep *util_ep)
 	struct rxm_ep *rxm_ep =
 		container_of(util_ep, struct rxm_ep, util_ep);
 	ssize_t ret;
-
-	rxm_cq_repost_rx_buffers(rxm_ep);
 
 	if (OFI_UNLIKELY(rxm_ep->util_ep.cmap->av_updated)) {
 		ret = rxm_cq_reprocess_recv_queues(rxm_ep);
@@ -1050,8 +1021,6 @@ void rxm_ep_progress_multi(struct util_ep *util_ep)
 		container_of(util_ep, struct rxm_ep, util_ep);
 	ssize_t ret;
 	size_t comp_read = 0;
-
-	rxm_cq_repost_rx_buffers(rxm_ep);
 
 	if (OFI_UNLIKELY(rxm_ep->util_ep.cmap->av_updated)) {
 		ret = rxm_cq_reprocess_recv_queues(rxm_ep);

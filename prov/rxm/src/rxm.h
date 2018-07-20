@@ -598,11 +598,39 @@ rxm_check_unexp_msg_list(struct rxm_recv_queue *recv_queue, fi_addr_t addr,
 	return container_of(entry, struct rxm_rx_buf, unexp_msg.entry);
 }
 
+static inline int rxm_ep_repost_buf(struct rxm_rx_buf *rx_buf)
+{
+	if (rx_buf->ep->srx_ctx)
+		rx_buf->conn = NULL;
+	rx_buf->hdr.state = RXM_RX;
+
+	if (fi_recv(rx_buf->hdr.msg_ep, &rx_buf->pkt, rx_buf->ep->eager_pkt_size,
+		    rx_buf->hdr.desc, FI_ADDR_UNSPEC, rx_buf)) {
+		FI_WARN(&rxm_prov, FI_LOG_EP_CTRL, "Unable to repost buf\n");
+		return -FI_EAVAIL;
+	}
+	return FI_SUCCESS;
+}
+
+static inline void rxm_cq_repost_rx_buffers(struct rxm_ep *rxm_ep)
+{
+	struct rxm_rx_buf *buf;
+	rxm_ep->res_fastlock_acquire(&rxm_ep->util_ep.lock);
+	while (!dlist_empty(&rxm_ep->repost_ready_list)) {
+		dlist_pop_front(&rxm_ep->repost_ready_list, struct rxm_rx_buf,
+				buf, repost_entry);
+		(void) rxm_ep_repost_buf(buf);
+	}
+	rxm_ep->res_fastlock_release(&rxm_ep->util_ep.lock);
+}
+
 static inline int
 rxm_process_recv_entry(struct rxm_recv_queue *recv_queue,
 		       struct rxm_recv_entry *recv_entry)
 {
 	struct rxm_rx_buf *rx_buf;
+
+	rxm_cq_repost_rx_buffers(recv_queue->rxm_ep);
 
 	recv_queue->rxm_ep->res_fastlock_acquire(&recv_queue->lock);
 	rx_buf = rxm_check_unexp_msg_list(recv_queue, recv_entry->addr,
