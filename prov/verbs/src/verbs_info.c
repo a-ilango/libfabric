@@ -1242,6 +1242,25 @@ err1:
 	return ret;
 }
 
+static void fi_ibv_remove_nosrc_info(struct fi_info **info)
+{
+	struct fi_info **fi = info, *next;
+	while (*fi && ((*fi)->ep_attr->type == FI_EP_MSG)) {
+		if (!(*fi)->src_addr) {
+			VERBS_INFO(FI_LOG_FABRIC, "Not reporting fi_info "
+				   "corresponding to domain: %s as it has no IP"
+				   "address configured\n",
+				   (*fi)->domain_attr->name);
+			next = (*fi)->next;
+			(*fi)->next = NULL;
+			fi_freeinfo(*fi);
+			*fi = next;
+		} else {
+			fi = &(*fi)->next;
+		}
+	}
+}
+
 int fi_ibv_getinfo(uint32_t version, const char *node, const char *service,
 		   uint64_t flags, struct fi_info *hints, struct fi_info **info)
 {
@@ -1264,13 +1283,16 @@ int fi_ibv_getinfo(uint32_t version, const char *node, const char *service,
 
 	ret = fi_ibv_get_matching_info(version, dev_name, hints, info);
 	if (ret)
-		goto err;
+		goto err1;
 
 	ret = fi_ibv_fill_addr(rai, info, id);
-	if (ret) {
-		fi_freeinfo(*info);
-		goto err;
-	}
+	if (ret)
+		goto err2;
+
+	fi_ibv_remove_nosrc_info(info);
+
+	if (!*info)
+		goto err2;
 
 	ofi_alter_info(*info, hints, version);
 
@@ -1278,7 +1300,9 @@ int fi_ibv_getinfo(uint32_t version, const char *node, const char *service,
 		for (cur = *info; cur; cur = cur->next)
 			cur->domain_attr->cq_data_size = 0;
 	}
-err:
+err2:
+	fi_freeinfo(*info);
+err1:
 	fi_ibv_destroy_ep(rai, &id);
 out:
 	if (!ret || ret == -FI_ENOMEM || ret == -FI_ENODEV)
