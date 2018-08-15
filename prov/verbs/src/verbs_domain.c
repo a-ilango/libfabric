@@ -418,6 +418,105 @@ static void fi_ibv_domain_process_exp(struct fi_ibv_domain *domain)
 	domain->use_odp = fi_ibv_gl_data.use_odp;
 }
 
+pthread_t async_event_th = 0;
+
+static void print_async_event(struct ibv_context *ctx,
+			      struct ibv_async_event *event)
+{
+	switch (event->event_type) {
+	/* QP events */
+	case IBV_EVENT_QP_FATAL:
+		printf("QP fatal event for QP with handle %p\n", event->element.qp);
+		break;
+	case IBV_EVENT_QP_REQ_ERR:
+		printf("QP Requestor error for QP with handle %p\n", event->element.qp);
+		break;
+	case IBV_EVENT_QP_ACCESS_ERR:
+		printf("QP access error event for QP with handle %p\n", event->element.qp);
+		break;
+	case IBV_EVENT_COMM_EST:
+		printf("QP communication established event for QP with handle %p\n", event->element.qp);
+		break;
+	case IBV_EVENT_SQ_DRAINED:
+		printf("QP Send Queue drained event for QP with handle %p\n", event->element.qp);
+		break;
+	case IBV_EVENT_PATH_MIG:
+		printf("QP Path migration loaded event for QP with handle %p\n", event->element.qp);
+		break;
+	case IBV_EVENT_PATH_MIG_ERR:
+		printf("QP Path migration error event for QP with handle %p\n", event->element.qp);
+		break;
+	case IBV_EVENT_QP_LAST_WQE_REACHED:
+		printf("QP last WQE reached event for QP with handle %p\n", event->element.qp);
+		break;
+ 
+	/* CQ events */
+	case IBV_EVENT_CQ_ERR:
+		printf("CQ error for CQ with handle %p\n", event->element.cq);
+		break;
+ 
+	/* SRQ events */
+	case IBV_EVENT_SRQ_ERR:
+		printf("SRQ error for SRQ with handle %p\n", event->element.srq);
+		break;
+	case IBV_EVENT_SRQ_LIMIT_REACHED:
+		printf("SRQ limit reached event for SRQ with handle %p\n", event->element.srq);
+		break;
+ 
+	/* Port events */
+	case IBV_EVENT_PORT_ACTIVE:
+		printf("Port active event for port number %d\n", event->element.port_num);
+		break;
+	case IBV_EVENT_PORT_ERR:
+		printf("Port error event for port number %d\n", event->element.port_num);
+		break;
+	case IBV_EVENT_LID_CHANGE:
+		printf("LID change event for port number %d\n", event->element.port_num);
+		break;
+	case IBV_EVENT_PKEY_CHANGE:
+		printf("P_Key table change event for port number %d\n", event->element.port_num);
+		break;
+	case IBV_EVENT_GID_CHANGE:
+		printf("GID table change event for port number %d\n", event->element.port_num);
+		break;
+	case IBV_EVENT_SM_CHANGE:
+		printf("SM change event for port number %d\n", event->element.port_num);
+		break;
+	case IBV_EVENT_CLIENT_REREGISTER:
+		printf("Client reregister event for port number %d\n", event->element.port_num);
+		break;
+ 
+	/* RDMA device events */
+	case IBV_EVENT_DEVICE_FATAL:
+		printf("Fatal error event for device %s\n", ibv_get_device_name(ctx->device));
+		break;
+ 
+	default:
+		printf("Unknown event (%d)\n", event->event_type);
+	}
+}
+
+static void *async_event_handler(void *arg)
+{
+	struct ibv_context *ctx = arg;
+	struct ibv_async_event event;
+	int ret;
+
+	ret = ibv_get_async_event(ctx, &event);
+	if (ret) {
+		fprintf(stderr, "Error, ibv_get_async_event() failed\n");
+		return NULL;
+	}
+ 
+	/* print the event */
+	print_async_event(ctx, &event);
+ 
+	/* ack the event */
+	ibv_ack_async_event(&event);
+	assert(0);
+	return NULL;
+}
+
 static int
 fi_ibv_domain(struct fid_fabric *fabric, struct fi_info *info,
 	      struct fid_domain **domain, void *context)
@@ -463,6 +562,14 @@ fi_ibv_domain(struct fid_fabric *fabric, struct fi_info *info,
 		ret = -errno;
 		goto err3;
 	}
+	assert(!*(uint8_t *)&async_event_th);
+	if (pthread_create(&async_event_th, 0,
+			   async_event_handler, _domain->verbs)) {
+		VERBS_WARN(FI_LOG_FABRIC,
+			"Unable to async_event_handler thread\n");
+		goto err3;
+	}
+
 
 	_domain->util_domain.domain_fid.fid.fclass = FI_CLASS_DOMAIN;
 	_domain->util_domain.domain_fid.fid.context = context;
