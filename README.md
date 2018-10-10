@@ -390,3 +390,4 @@ Even though windows isn't fully supported yet it is possible to compile and link
   - depending on what you are building you may also need to copy `libfabric.dll` into the targetfolder of your own project.
 
 Test status
+update 11
