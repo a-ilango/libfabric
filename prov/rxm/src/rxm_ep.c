@@ -1168,7 +1168,8 @@ rxm_ep_emulate_inject(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 	}
 	rxm_ep_format_tx_buf_pkt(rxm_conn, len, op, data, tag, flags, &tx_buf->pkt);
 	memcpy(tx_buf->pkt.data, buf, len);
-	tx_buf->flags = flags;
+	// add FI_INJECT as temp hack - see rxm_cq_write_error
+	tx_buf->flags = flags | FI_INJECT;
 
 	ret = rxm_ep_normal_send(rxm_ep, rxm_conn, &tx_buf->pkt, pkt_size,
 				 tx_buf->hdr.desc, tx_buf);

@@ -906,6 +906,8 @@ static void rxm_cq_read_write_error(struct rxm_ep *rxm_ep)
 	struct util_cq *util_cq;
 	struct util_cntr *util_cntr = NULL;
 	ssize_t ret;
+	void *context;
+	uint8_t skip = 1;
 
 	OFI_CQ_READERR(&rxm_prov, FI_LOG_CQ, rxm_ep->msg_cq, ret,
 		       err_entry);
@@ -916,23 +918,31 @@ static void rxm_cq_read_write_error(struct rxm_ep *rxm_ep)
 		return;
 	}
 
-	rx_buf = (struct rxm_rx_buf *)err_entry.op_context;
-
 	switch (RXM_GET_PROTO_STATE(err_entry.op_context)) {
 	case RXM_SAR_TX:
+		context = ((struct rxm_tx_sar_buf *)err_entry.op_context)->app_context;
+		goto set_tx;
 	case RXM_TX:
-	case RXM_INJECT_TX:
+		context = ((struct rxm_tx_eager_buf *)err_entry.op_context)->app_context;
+		// TODO replace this temp hack - may be erroneous in case of
+		// fi_msg / fi_tmsg. This is needed to track emulated injects.
+		// TODO emulated fi_inject (also fi_msg: FI_INJECT | !FI_COMPLETION)
+		// should be removed as we can't report failures to app right away
+		if (((struct rxm_tx_eager_buf *)err_entry.op_context)->flags & FI_INJECT)
+			skip = 0;
+		goto set_tx;
 	case RXM_RNDV_TX:
-		util_cq = rxm_ep->util_ep.tx_cq;
-		if (rxm_ep->util_ep.flags & OFI_CNTR_ENABLED)
-			util_cntr = rxm_ep->util_ep.tx_cntr;
-		break;
+		context = ((struct rxm_tx_rndv_buf *)err_entry.op_context)->app_context;
+		goto set_tx;
 	case RXM_RNDV_ACK_SENT:
+		assert(err_entry.flags & FI_SEND);
+		goto set_rx;
 	case RXM_RX:
+		assert(err_entry.flags & FI_RECV);
+		goto set_rx;
 	case RXM_RNDV_READ:
-		util_cq = rx_buf->ep->util_ep.rx_cq;
-		util_cntr = rx_buf->ep->util_ep.rx_cntr;
-		break;
+		assert(err_entry.flags & FI_READ);
+		goto set_rx;
 	default:
 		FI_WARN(&rxm_prov, FI_LOG_CQ, "Invalid state!\n");
 		FI_WARN(&rxm_prov, FI_LOG_CQ, "msg cq error info: %s\n",
@@ -941,12 +951,30 @@ static void rxm_cq_read_write_error(struct rxm_ep *rxm_ep)
 		rxm_cq_write_error_all(rxm_ep, -FI_EOPBADSTATE);
 		return;
 	}
+	goto out;
+set_tx:
+	assert(err_entry.flags & FI_SEND);
+	util_cq = rxm_ep->util_ep.tx_cq;
+	if (rxm_ep->util_ep.flags & OFI_CNTR_ENABLED)
+		util_cntr = rxm_ep->util_ep.tx_cntr;
+	goto out;
+set_rx:
+	rx_buf = (struct rxm_rx_buf *)err_entry.op_context;
+	context =  rx_buf->recv_entry->context;
+	util_cq = rx_buf->ep->util_ep.rx_cq;
+	util_cntr = rx_buf->ep->util_ep.rx_cntr;
+out:
+	// TODO fill other entries correctly
+	err_entry.op_context = context;
+
 	if (util_cntr)
 		rxm_cntr_incerr(util_cntr);
-	ret = ofi_cq_write_error(util_cq, &err_entry);
-	if (ret) {
-		FI_WARN(&rxm_prov, FI_LOG_CQ, "Unable to ofi_cq_write_error\n");
-		assert(0);
+	if (skip) {
+		ret = ofi_cq_write_error(util_cq, &err_entry);
+		if (ret) {
+			FI_WARN(&rxm_prov, FI_LOG_CQ, "Unable to ofi_cq_write_error\n");
+			assert(0);
+		}
 	}
 }
 
