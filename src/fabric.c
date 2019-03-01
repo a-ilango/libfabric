@@ -398,6 +398,7 @@ static void ofi_ini_dir(const char *dir)
 	if (n < 0)
 		goto libdl_done;
 
+	// test1
 	while (n--) {
 		if (asprintf(&lib, "%s/%s", dir, liblist[n]->d_name) < 0) {
 			FI_WARN(&core_prov, FI_LOG_CORE,
