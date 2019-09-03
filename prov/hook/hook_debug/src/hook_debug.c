@@ -636,9 +636,9 @@ int hook_debug_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 	if (!hfid || !hbfid)
 		return -FI_EINVAL;
 
-	switch (fid->fclass) {
+	switch (bfid->fclass) {
 	case FI_CLASS_CNTR:
-		cntr = container_of(fid, struct hook_cntr, cntr.fid);
+		cntr = container_of(bfid, struct hook_cntr, cntr.fid);
 		HOOK_DEBUG_TRACE(cntr->domain->fabric, FI_LOG_EP_CTRL,
 				 "cntr: %p bind flags: %s\n", cntr->hcntr,
 				 fi_tostr(&flags, FI_TYPE_CAPS));
