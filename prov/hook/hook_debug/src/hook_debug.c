@@ -527,6 +527,18 @@ static ssize_t hook_debug_cq_read(struct fid_cq *cq, void *buf, size_t count)
 	return ret;
 }
 
+static ssize_t hook_debug_cq_readfrom(struct fid_cq *cq, void *buf, size_t count,
+				      fi_addr_t *src_addr)
+{
+	struct hook_debug_cq *mycq = container_of(cq, struct hook_debug_cq,
+						  hook_cq.cq);
+	ssize_t ret;
+
+	ret = fi_cq_readfrom(mycq->hook_cq.hcq, buf, count, src_addr);
+	hook_debug_cq_process_entry(mycq, "fi_cq_readfrom", ret, buf);
+	return ret;
+}
+
 int hook_debug_cq_close(struct fid *fid)
 {
 	struct hook_debug_cq *mycq =
@@ -630,6 +642,7 @@ int hook_debug_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 {
 	struct fid *hfid, *hbfid;
 	struct hook_cntr *cntr;
+	struct hook_cq *cq;
 
 	hfid = hook_to_hfid(fid);
 	hbfid = hook_to_hfid(bfid);
@@ -637,6 +650,12 @@ int hook_debug_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 		return -FI_EINVAL;
 
 	switch (bfid->fclass) {
+	case FI_CLASS_CQ:
+		cq = container_of(bfid, struct hook_cq, cq.fid);
+		HOOK_DEBUG_TRACE(cq->domain->fabric, FI_LOG_EP_CTRL,
+				 "cq: %p bind flags: %s\n", cq->hcq,
+				 fi_tostr(&flags, FI_TYPE_CAPS));
+		break;
 	case FI_CLASS_CNTR:
 		cntr = container_of(bfid, struct hook_cntr, cntr.fid);
 		HOOK_DEBUG_TRACE(cntr->domain->fabric, FI_LOG_EP_CTRL,
@@ -694,12 +713,12 @@ int hook_debug_endpoint(struct fid_domain *domain, struct fi_info *info,
 
 	int ret = -FI_ENOMEM;
 
-	if (info->domain_attr->threading != FI_THREAD_DOMAIN) {
-		FI_WARN(&hook_debug_prov_ctx.prov, FI_LOG_CQ,
-			"debug hooking provider doesn't support thread safety"
-			"at this time\n");
-		return -FI_EINVAL;
-	}
+	//if (info->domain_attr->threading != FI_THREAD_DOMAIN) {
+	//	FI_WARN(&hook_debug_prov_ctx.prov, FI_LOG_CQ,
+	//		"debug hooking provider doesn't support thread safety"
+	//		"at this time\n");
+	//	return -FI_EINVAL;
+	//}
 
 	FI_TRACE(hook_to_hprov(&domain->fid), FI_LOG_EP_CTRL,
 		 "tx_attr->size: %zu\n", info->tx_attr->size);
@@ -760,6 +779,8 @@ static ssize_t hook_debug_eq_read(struct fid_eq *eq, uint32_t *event,
 	if (ret > 0)
 		ofi_atomic_inc64(&myeq->event_cntr[*event]);
 
+	hook_debug_trace_exit(&myeq->hook_eq.eq.fid, &myeq->hook_eq.heq->fid,
+			      FI_LOG_EQ, "fi_eq_read", (ssize_t)ret, &myeq->eagain_count);
 	return ret;
 }
 
@@ -775,6 +796,8 @@ static ssize_t hook_debug_eq_sread(struct fid_eq *eq, uint32_t *event,
 	if (ret > 0)
 		ofi_atomic_inc64(&myeq->event_cntr[*event]);
 
+	hook_debug_trace_exit(&myeq->hook_eq.eq.fid, &myeq->hook_eq.heq->fid,
+			      FI_LOG_EQ, "fi_eq_sread", (ssize_t)ret, &myeq->eagain_count);
 	return ret;
 }
 
@@ -933,7 +956,7 @@ HOOK_DEBUG_INI
 
 	hook_debug_cq_ops = hook_cq_ops;
 	hook_debug_cq_ops.read = hook_debug_cq_read;
-	hook_debug_cq_ops.readfrom = fi_no_cq_readfrom;
+	hook_debug_cq_ops.readfrom = hook_debug_cq_readfrom;
 	hook_debug_cq_ops.sread = fi_no_cq_sread;
 	hook_debug_cq_ops.sreadfrom = fi_no_cq_sreadfrom;
 
